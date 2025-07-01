@@ -1,0 +1,381 @@
+# ==============================================================================
+# Aplicativo Streamlit do Painel da EDIA com Visualização 3D
+#
+# Este script Python cria uma interface de usuário interativa (frontend)
+# para a Editora Digital Inteligente e Automatizada (EDIA).
+# Ele se conecta ao backend da EDIA (hospedado no PythonAnywhere) para
+# buscar dados em tempo real sobre o status dos manuscritos e agentes.
+#
+# Funcionalidades:
+# - Exibição de status geral dos manuscritos por etapa.
+# - Tabela detalhada dos manuscritos ativos.
+# - Status individual de cada agente de IA.
+# - Botão para iniciar o processamento de um novo manuscrito.
+# - Visualização 3D conceitual do fluxo dos manuscritos pelas etapas,
+#   utilizando Three.js incorporado via st.components.v1.html.
+#
+# Para rodar este aplicativo:
+# 1. Certifique-se de que seu backend da EDIA está online no PythonAnywhere.
+# 2. Salve este código como, por exemplo, `dashboard_edia.py`.
+# 3. Instale o Streamlit: `pip install streamlit requests`
+# 4. Execute no terminal: `streamlit run dashboard_edia.py`
+# 5. Para hospedar gratuitamente: use o Streamlit Community Cloud.
+# ==============================================================================
+
+import streamlit as st
+import requests
+import json
+import time
+import uuid # Para gerar IDs de manuscritos de exemplo
+
+# --- Configurações Globais ---
+# URL base do seu backend da EDIA no PythonAnywhere.
+# ATENÇÃO: Substitua 'tompsongomes.pythonanywhere.com' pela sua URL real!
+BACKEND_URL = "https://tompsongomes.pythonanywhere.com"
+
+# --- Funções de Comunicação com o Backend ---
+
+@st.cache_data(ttl=5) # Cacheia os dados por 5 segundos para evitar requisições excessivas
+def fetch_painel_status():
+    """Busca o status completo do painel (manuscritos e agentes) do backend."""
+    try:
+        response = requests.get(f"{BACKEND_URL}/painel_status")
+        response.raise_for_status() # Levanta um erro para status HTTP ruins (4xx ou 5xx)
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        st.error(f"Erro ao conectar ao backend da EDIA: {e}")
+        st.info("Verifique se o backend está online no PythonAnywhere e se a URL está correta.")
+        return None
+
+def process_new_manuscript(title, author, content, is_aigc_declared=False):
+    """Envia um novo manuscrito para o backend processar."""
+    endpoint = f"{BACKEND_URL}/processar_manuscrito"
+    manuscript_data = {
+        "conteudo": content,
+        "metadata": {
+            "title": title,
+            "author": author,
+            "aigc_declarado": is_aigc_declared
+        }
+    }
+    try:
+        response = requests.post(endpoint, json=manuscript_data)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        st.error(f"Erro ao enviar manuscrito: {e}")
+        return None
+
+# --- Componente de Visualização 3D (Three.js) ---
+# Este HTML/JavaScript será incorporado no Streamlit para renderizar a cena 3D.
+# Ele recebe os dados de manuscritos e os visualiza.
+def render_3d_visualization(manuscripts_data):
+    # Converte os dados dos manuscritos para um formato JSON que o JS pode entender
+    # para passar para a cena 3D.
+    manuscripts_json = json.dumps(manuscripts_data)
+
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Visualização 3D EDIA</title>
+        <style>
+            body {{ margin: 0; overflow: hidden; }}
+            canvas {{ display: block; }}
+        </style>
+    </head>
+    <body>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+        <script>
+            // Dados dos manuscritos passados do Streamlit
+            const manuscriptsData = {manuscripts_json};
+
+            // Configuração da cena Three.js
+            let scene, camera, renderer;
+            let manuscriptObjects = {{}}; // Para rastrear objetos 3D de manuscritos
+
+            const stages = [
+                "Aquisição de Conteúdo",
+                "Desenvolvimento de Conteúdo",
+                "Garantia de Qualidade",
+                "Design e Produção",
+                "Marketing e Distribuição",
+                "Monitoramento de Desempenho",
+                "Concluído",
+                "Rejeitado"
+            ];
+
+            const stagePositions = {{}};
+            const stageColors = {{
+                "Aquisição de Conteúdo": 0x007bff, // Azul
+                "Desenvolvimento de Conteúdo": 0x28a745, // Verde
+                "Garantia de Qualidade": 0xffc107, // Amarelo
+                "Design e Produção": 0x17a2b8, // Ciano
+                "Marketing e Distribuição": 0xdc3545, // Vermelho
+                "Monitoramento de Desempenho": 0x6f42c1, // Roxo
+                "Concluído": 0x20c997, // Verde Água
+                "Rejeitado": 0x6c757d  // Cinza
+            }};
+
+            function init() {{
+                // Cena
+                scene = new THREE.Scene();
+                scene.background = new THREE.Color(0xf0f0f0); // Fundo claro
+
+                // Câmera
+                camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+                camera.position.z = 15;
+                camera.position.y = 5;
+                camera.lookAt(0, 0, 0);
+
+                // Renderizador
+                renderer = new THREE.WebGLRenderer({{ antialias: true }});
+                renderer.setSize(window.innerWidth, window.innerHeight);
+                document.body.appendChild(renderer.domElement);
+
+                // Luzes
+                const ambientLight = new THREE.AmbientLight(0x404040); // Luz ambiente suave
+                scene.add(ambientLight);
+                const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+                directionalLight.position.set(0, 10, 5);
+                scene.add(directionalLight);
+
+                // Criar representação das etapas como planos
+                stages.forEach((stage, index) => {{
+                    const geometry = new THREE.PlaneGeometry(15, 2); // Largura, Altura
+                    const material = new THREE.MeshBasicMaterial({{ color: stageColors[stage], side: THREE.DoubleSide, transparent: true, opacity: 0.7 }});
+                    const plane = new THREE.Mesh(geometry, material);
+                    const yPos = (stages.length / 2 - index - 0.5) * 3; // Espaçamento vertical
+                    plane.position.set(0, yPos, -5); // Posição em Z para profundidade
+                    scene.add(plane);
+                    stagePositions[stage] = plane.position.y;
+
+                    // Adicionar texto para o nome da etapa
+                    const canvas = document.createElement('canvas');
+                    const context = canvas.getContext('2d');
+                    context.font = 'Bold 100px Arial';
+                    context.fillStyle = 'white';
+                    context.fillText(stage, 0, 100);
+
+                    const texture = new THREE.CanvasTexture(canvas);
+                    const spriteMaterial = new THREE.SpriteMaterial({{ map: texture }});
+                    const sprite = new THREE.Sprite(spriteMaterial);
+                    sprite.scale.set(10, 1, 1); // Ajustar escala para visibilidade
+                    sprite.position.set(plane.position.x, plane.position.y, plane.position.z + 0.1); // Levemente à frente do plano
+                    scene.add(sprite);
+                }});
+
+                // Atualizar manuscritos
+                updateManuscripts();
+
+                // Animação
+                animate();
+            }}
+
+            function updateManuscripts() {{
+                // Remover manuscritos que não estão mais nos dados
+                for (const id in manuscriptObjects) {{
+                    if (!manuscriptsData[id]) {{
+                        scene.remove(manuscriptObjects[id]);
+                        delete manuscriptObjects[id];
+                    }}
+                }}
+
+                // Adicionar/Atualizar manuscritos
+                for (const id in manuscriptsData) {{
+                    const data = manuscriptsData[id];
+                    const stage = data.etapa_atual;
+                    const status = data.status;
+                    const title = data.dados.titulo || `Manuscrito ${id.substring(0, 8)}`;
+
+                    let manuscriptSphere = manuscriptObjects[id];
+
+                    if (!manuscriptSphere) {{
+                        // Criar nova esfera para o manuscrito
+                        const geometry = new THREE.SphereGeometry(0.5, 32, 32);
+                        const material = new THREE.MeshPhongMaterial({{ color: 0xffa500 }}); // Cor laranja padrão
+                        manuscriptSphere = new THREE.Mesh(geometry, material);
+                        scene.add(manuscriptSphere);
+                        manuscriptObjects[id] = manuscriptSphere;
+                        
+                        // Adicionar texto (título) ao manuscrito
+                        const canvasText = document.createElement('canvas');
+                        const contextText = canvasText.getContext('2d');
+                        contextText.font = 'Bold 60px Arial';
+                        contextText.fillStyle = 'black';
+                        contextText.fillText(title, 0, 60);
+
+                        const textureText = new THREE.CanvasTexture(canvasText);
+                        const spriteMaterialText = new THREE.SpriteMaterial({{ map: textureText }});
+                        const spriteText = new THREE.Sprite(spriteMaterialText);
+                        spriteText.scale.set(6, 0.6, 1); // Ajustar escala para visibilidade
+                        manuscriptSphere.add(spriteText); // Adiciona como filho da esfera
+                        spriteText.position.set(0, 0.8, 0); // Posição acima da esfera
+                    }}
+
+                    // Atualizar cor e posição com base no status/etapa
+                    let color = 0xffa500; // Laranja (em processo)
+                    if (status === 'publicado') {{
+                        color = 0x00ff00; // Verde (publicado)
+                    }} else if (status === 'rejeitado') {{
+                        color = 0xff0000; // Vermelho (rejeitado)
+                    }} else if (stageColors[stage]) {{
+                        color = stageColors[stage]; // Cor da etapa
+                    }}
+                    manuscriptSphere.material.color.set(color);
+
+                    // Mover para a posição da etapa
+                    const targetY = stagePositions[stage] || 0; // Posição da etapa ou 0 se desconhecida
+                    manuscriptSphere.position.y = targetY; // Move diretamente para a posição da etapa
+                    manuscriptSphere.position.x = Math.random() * 4 - 2; // Posição X aleatória para evitar sobreposição
+                    manuscriptSphere.position.z = Math.random() * 2 - 1; // Posição Z aleatória
+                }}
+            }
+
+            function animate() {{
+                requestAnimationFrame(animate);
+                // Rotacionar a cena levemente para dar um efeito 3D
+                scene.rotation.y += 0.001;
+                renderer.render(scene, camera);
+            }}
+
+            window.addEventListener('resize', () => {{
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            }});
+
+            init();
+        </script>
+    </body>
+    </html>
+    """
+    # Usar st.components.v1.html para incorporar o conteúdo HTML/JS
+    st.components.v1.html(html_content, height=500, scrolling=False)
+
+
+# --- Layout do Aplicativo Streamlit ---
+st.set_page_config(layout="wide", page_title="Painel EDIA - Monitoramento em Tempo Real")
+
+st.title("📚 Painel da Editora Digital Inteligente e Automatizada (EDIA)")
+st.markdown("""
+Este painel oferece uma visão em tempo real do fluxo editorial da EDIA,
+desde a aquisição de manuscritos até o monitoramento de desempenho pós-lançamento.
+""")
+
+# --- Entrada da URL do Backend ---
+st.sidebar.header("Configuração do Backend")
+backend_url_input = st.sidebar.text_input(
+    "URL do Backend da EDIA:",
+    value=BACKEND_URL,
+    help="Insira a URL completa do seu backend Flask hospedado no PythonAnywhere."
+)
+if backend_url_input:
+    BACKEND_URL = backend_url_input
+
+# --- Seção para Iniciar Novo Manuscrito ---
+st.sidebar.header("Iniciar Novo Manuscrito")
+with st.sidebar.form("novo_manuscrito_form"):
+    manusc_title = st.text_input("Título do Manuscrito:", "O Menino que Corria pelos Sonhos")
+    manusc_author = st.text_input("Autor:", "Fictício Automático")
+    manusc_content = st.text_area("Conteúdo (resumo):", "Um jovem garoto descobre um mundo mágico dentro de seus sonhos e deve usá-lo para salvar sua aldeia. Uma história de aventura, magia e autodescoberta.")
+    is_aigc_declared = st.checkbox("Conteúdo gerado por IA (AIGC) declarado?", False)
+    
+    submitted = st.form_submit_button("Processar Manuscrito")
+    if submitted:
+        if not manusc_title or not manusc_content:
+            st.error("Título e Conteúdo do manuscrito são obrigatórios.")
+        else:
+            with st.spinner("Enviando manuscrito para processamento..."):
+                result = process_new_manuscript(manusc_title, manusc_author, manusc_content, is_aigc_declared)
+                if result:
+                    st.success(f"Manuscrito '{manusc_title}' (ID: {result.get('manuscrito_id', 'N/A')[:8]}) enviado com sucesso! Status inicial: {result.get('status_inicial')}.")
+                else:
+                    st.error("Falha ao enviar manuscrito. Verifique o console para detalhes.")
+
+st.sidebar.markdown("---")
+st.sidebar.info("O manuscrito com o título 'O Menino que Corria pelos Sonhos' é configurado para ser sempre aprovado no backend para fins de demonstração do fluxo completo.")
+
+
+# --- Carregar Dados do Painel ---
+st.header("Visão Geral do Sistema EDIA")
+
+# Botão de Recarregar Manual
+col1, col2 = st.columns([0.8, 0.2])
+if col2.button("Atualizar Painel Agora"):
+    st.cache_data.clear() # Limpa o cache para forçar uma nova busca
+    st.rerun() # Recarrega o script para exibir os dados atualizados
+
+painel_data = fetch_painel_status()
+
+if painel_data:
+    # --- Visualização 3D ---
+    st.subheader("Visualização 3D do Fluxo Editorial")
+    render_3d_visualization(painel_data.get('manuscritos_ativos', {}))
+    st.markdown("---")
+
+    # --- Status dos Manuscritos por Etapa ---
+    st.subheader("Status dos Manuscritos por Etapa")
+    etapas_counts = painel_data.get('contadores_etapas', {})
+    
+    # Ordenar as etapas para exibição consistente
+    ordered_stages = [
+        'Aquisição de Conteúdo', 'Desenvolvimento de Conteúdo',
+        'Garantia de Qualidade', 'Design e Produção',
+        'Marketing e Distribuição', 'Monitoramento de Desempenho',
+        'Concluído', 'Rejeitado'
+    ]
+    
+    cols = st.columns(len(ordered_stages))
+    for i, stage in enumerate(ordered_stages):
+        with cols[i]:
+            st.metric(label=stage, value=etapas_counts.get(stage, 0))
+
+    st.markdown("---")
+
+    # --- Manuscritos Ativos Detalhados ---
+    st.subheader("Manuscritos Ativos")
+    manuscritos_ativos = painel_data.get('manuscritos_ativos', {})
+    
+    if manuscritos_ativos:
+        # Preparar dados para exibição em tabela
+        data_for_table = []
+        for manus_id, details in manuscritos_ativos.items():
+            data_for_table.append({
+                "ID Curto": manus_id[:8],
+                "Título": details['dados'].get('titulo', f"Manuscrito {manus_id[:8]}"),
+                "Autor": details['dados'].get('autor', 'Desconhecido'),
+                "Etapa Atual": details.get('etapa_atual', 'N/A'),
+                "Status": details.get('status', 'N/A'),
+                "Pontuação IA": f"{details.get('pontuacao_ia', 0.0):.2f}",
+                "Conteúdo (Resumo)": details['dados'].get('conteudo', 'N/A')[:100] + "..."
+            })
+        st.dataframe(data_for_table, use_container_width=True)
+    else:
+        st.info("Nenhum manuscrito ativo no momento.")
+
+    st.markdown("---")
+
+    # --- Status dos Agentes de IA ---
+    st.subheader("Status dos Agentes de IA")
+    agentes_status = painel_data.get('status_agentes', {})
+    
+    # Preparar dados para exibição em tabela
+    agentes_data_for_table = []
+    for agent_name, details in agentes_status.items():
+        agentes_data_for_table.append({
+            "Agente": agent_name,
+            "Status": details.get('status', 'N/A'),
+            "Progresso": f"{details.get('progresso', 0.0)*100:.1f}%",
+            "Tarefas em Andamento": details.get('tarefas_em_andamento', 0)
+        })
+    st.dataframe(agentes_data_for_table, use_container_width=True)
+
+    # --- Atualização Automática ---
+    st.markdown("---")
+    st.info("O painel é atualizado automaticamente a cada 5 segundos.")
+    time.sleep(5) # Pausa o script por 5 segundos antes de recarregar
+    st.rerun() # Recarrega o script para buscar novos dados
+else:
+    st.warning("Não foi possível carregar os dados do painel. Verifique a conexão com o backend.")
+
